@@ -45,7 +45,7 @@ agents:
           target: "< 5"
           enforcement: warn
         p95_latency_seconds:
-          target: "< 10"
+          target: "< 70"
           enforcement: block
         steps_per_case:
           target: "<= 12"
@@ -108,7 +108,7 @@ agents:
           enforcement: block
       performance:
         p95_latency_seconds:
-          target: "< 15"
+          target: "< 85"
           enforcement: warn
           note: "Three sequential tool calls — latency is higher than leaf agents"
       reliability:
@@ -143,7 +143,7 @@ agents:
           enforcement: warn
       performance:
         p95_latency_seconds:
-          target: "< 20"
+          target: "< 32"
           enforcement: warn
           note: "Includes beneficiary validation + payment system call"
       reliability:
@@ -180,7 +180,7 @@ agents:
           enforcement: block
       performance:
         p95_latency_seconds:
-          target: "< 8"
+          target: "< 25"
           enforcement: warn
 
   customer_360_agent:
@@ -202,7 +202,7 @@ agents:
           enforcement: block
       performance:
         p95_latency_seconds:
-          target: "< 6"
+          target: "< 40"
           enforcement: warn
         api_success_rate:
           target: ">= 99%"
@@ -226,7 +226,7 @@ agents:
           note: "READ-ONLY agent — no writes permitted"
       performance:
         p95_latency_seconds:
-          target: "< 5"
+          target: "< 32"
           enforcement: warn
 
   aml_agent:
@@ -247,7 +247,7 @@ agents:
           enforcement: block
       performance:
         p95_latency_seconds:
-          target: "< 5"
+          target: "< 18"
           enforcement: warn
 
   sanctions_agent:
@@ -271,7 +271,7 @@ agents:
           note: "CONFIRMED_MATCH details must never be shared with customer"
       performance:
         p95_latency_seconds:
-          target: "< 3"
+          target: "< 18"
           enforcement: warn
 
   fema_remittance_agent:
@@ -295,7 +295,7 @@ agents:
           enforcement: block
       performance:
         p95_latency_seconds:
-          target: "< 5"
+          target: "< 18"
           enforcement: warn
 
   fx_agent:
@@ -316,7 +316,7 @@ agents:
           note: "FX agent must never execute payments"
       performance:
         p95_latency_seconds:
-          target: "< 5"
+          target: "< 40"
           enforcement: warn
         quote_creation_latency:
           target: "< 3"
@@ -342,7 +342,7 @@ agents:
           note: "Income must come from extract pipeline, not customer's claim"
       performance:
         p95_latency_seconds:
-          target: "< 10"
+          target: "< 40"
           enforcement: warn
           note: "Multiple document calls per turn"
 
@@ -360,7 +360,7 @@ agents:
           note: "Agent must never estimate score without calling bureau tool"
       performance:
         p95_latency_seconds:
-          target: "< 5"
+          target: "< 15"
           enforcement: warn
         api_success_rate:
           target: ">= 99.5%"

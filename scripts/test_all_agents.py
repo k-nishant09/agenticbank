@@ -745,7 +745,7 @@ STEPS = [
 
     (5, "A", "credit_bureau_agent",
      "Credit Bureau — CIBIL score and credit history",
-     f"Retrieve the CIBIL score and 24-month credit history for customer {CUSTOMER_ID}.",
+     f"Retrieve the CIBIL score and 24-month credit history for customer {CUSTOMER_ID}. PAN: ABCDE1234F.",
      _val_credit_bureau),
 
     (6, "A", "document_agent",

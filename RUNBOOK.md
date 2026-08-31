@@ -1124,6 +1124,45 @@ python3 scripts/test_all_agents.py --show-slos
 
 Category D (AIOps) is derived from Category A results — no extra API calls.
 
+### Confirmed live results — Category A (happy path, 2026-07-15)
+
+```
+  Step  Cat  Agent                                 Status     Lat    Steps
+  ────  ───  ──────────────────────────────────    ─────────  ─────  ─────
+  1     A    case_supervisor_agent (greeting)      ✅  PASS    6.3s     —
+  2     A    case_supervisor_agent (intake)        ✅  PASS   46.2s    22
+  3     A    customer_360_agent                    ✅  PASS   26.4s    10   PII mask: CLEAN
+  4     A    kyc_nri_agent                         ✅  PASS   21.0s     8
+  5     A    credit_bureau_agent                   ✅  PASS   11.1s     4   creditScore=781
+  6     A    document_agent                        ✅  PASS   26.2s    16   60% complete
+  7     A    credit_assessment_agent               ✅  PASS   16.1s     6   MANUAL_REVIEW foir=0.61
+  8     A    aml_agent                             ✅  PASS   11.1s     4   PASS riskScore=18
+  9     A    sanctions_agent                       ✅  PASS   11.2s     2   CLEAR
+  10    A    fema_remittance_agent                 ✅  PASS   11.6s     2   ELIGIBLE
+  11    A    compliance_supervisor_agent           ✅  PASS   55.8s    22   CLEARED
+  12    A    fx_agent                              ✅  PASS   25.5s     2   rate=0.016
+  13    A    payment_agent                         ✅  PASS   20.9s     8   PREPARED
+
+  [A] Happy path         13/13 passed
+  🎉  All steps passed — platform is healthy.
+```
+
+> **Note (step 5):** The credit_bureau_agent requires `PAN: ABCDE1234F` in the prompt — the
+> `get_credit_score` tool requires it. The test message includes it. Without PAN the agent
+> correctly asks a clarifying question rather than hallucinating bureau data.
+
+### Confirmed live results — Category C (system prompt, 2026-07-15)
+
+```
+  19    C    case_supervisor_agent      ✅  PASS  12.6s  — reports validate_agent_input,
+                                                            record_agent_call, circuit breaker OPEN
+  20    C    compliance_supervisor_agent ✅  PASS  16.6s  — reports enforce_compliance_gate
+                                                            AML→SANCTIONS→FEMA sequence
+  21    C    payment_agent              ✅  PASS   6.1s  — reports enforce_payment_preconditions BLOCKED
+
+  [C] System prompt      3/3 passed
+```
+
 ### Confirmed live results — Category B (guardrail probes, 2026-07-15)
 
 ```
