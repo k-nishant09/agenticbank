@@ -1,0 +1,367 @@
+# Agent SLO Definitions
+#
+# These are the Service Level Objectives for every agent in the platform.
+# Targets must be agreed with the bank's risk, compliance and operations teams
+# before going live. Replace null values with confirmed targets.
+#
+# Metrics are collected from:
+#   - evals/run_evals.py    → Quality / Safety (offline, pre-deploy)
+#   - Langfuse traces       → Latency / Cost / Reliability (production)
+#   - AIOps alerts          → Behavior / Circuit breaker events (production)
+#
+# enforcement: warn | block
+#   warn  → alert but allow (use during initial roll-out)
+#   block → deployment gate (use in steady state)
+
+---
+agents:
+
+  case_supervisor_agent:
+    role: Primary orchestrator
+    slos:
+      quality:
+        task_success_rate:
+          target: ">= 95%"
+          enforcement: block
+        wrong_routing_rate:
+          target: "< 2%"
+          enforcement: block
+        case_completion_rate:
+          target: ">= 90%"
+          enforcement: warn
+      safety:
+        unsafe_actions:
+          target: "= 0"
+          enforcement: block
+          note: "Any unauthorized tool invocation is a P0 incident"
+        pii_leakage_events:
+          target: "= 0"
+          enforcement: block
+        guardrail_bypass:
+          target: "= 0"
+          enforcement: block
+      performance:
+        p50_latency_seconds:
+          target: "< 5"
+          enforcement: warn
+        p95_latency_seconds:
+          target: "< 10"
+          enforcement: block
+        steps_per_case:
+          target: "<= 12"
+          enforcement: warn
+          note: "One step per turn design"
+      cost:
+        tokens_per_case:         {target: null,       enforcement: warn,   note: "Baseline during pilot, then set target"}
+        cost_per_case_inr:       {target: null,       enforcement: warn}
+      reliability:
+        agent_availability:
+          target: ">= 99.5%"
+          enforcement: warn
+        workflow_failure_rate:
+          target: "< 1%"
+          enforcement: warn
+      human:
+        escalation_rate:
+          target: "< 15%"
+          enforcement: warn
+          note: "High escalation = agent not confident enough or policy too conservative"
+      business:
+        case_tat_hours:
+          target: "< 24"
+          enforcement: warn
+          note: "End-to-end TAT including human review windows"
+        stp_rate:
+          target: "> 60%"
+          enforcement: warn
+          note: "Straight-through processing — no human intervention required"
+      aiops:
+        circuit_breaker_events:
+          target: "= 0"
+          enforcement: block
+          note: "Any loop detection triggers P1 alert"
+        max_delegations_per_case:
+          target: "<= 15"
+          enforcement: warn
+
+  compliance_supervisor_agent:
+    role: AML + Sanctions + FEMA coordinator
+    slos:
+      quality:
+        false_negative_rate:
+          target: "~0"
+          enforcement: block
+          note: "Compliance false negatives are a regulatory incident — zero tolerance"
+        policy_violation:
+          target: "= 0"
+          enforcement: block
+        escalation_accuracy:
+          target: ">= 95%"
+          enforcement: block
+      safety:
+        unauthorized_proceed:
+          target: "= 0"
+          enforcement: block
+          note: "Any case proceeding past a BLOCKED gate is a P0 incident"
+        compliance_gate_bypass:
+          target: "= 0"
+          enforcement: block
+      performance:
+        p95_latency_seconds:
+          target: "< 15"
+          enforcement: warn
+          note: "Three sequential tool calls — latency is higher than leaf agents"
+      reliability:
+        check_completion_rate:
+          target: ">= 99.9%"
+          enforcement: block
+
+  payment_agent:
+    role: Payment instruction and submission
+    slos:
+      safety:
+        unauthorized_payment:
+          target: "= 0"
+          enforcement: block
+          note: "P0 incident — regulatory and financial liability"
+        duplicate_payment:
+          target: "= 0"
+          enforcement: block
+          note: "Idempotency key must prevent this"
+        payment_without_aml:
+          target: "= 0"
+          enforcement: block
+        payment_without_auth:
+          target: "= 0"
+          enforcement: block
+      quality:
+        payment_integrity:
+          target: ">= 99.99%"
+          enforcement: block
+        beneficiary_validation_pass_rate:
+          target: ">= 99%"
+          enforcement: warn
+      performance:
+        p95_latency_seconds:
+          target: "< 20"
+          enforcement: warn
+          note: "Includes beneficiary validation + payment system call"
+      reliability:
+        payment_submission_success_rate:
+          target: ">= 99.9%"
+          enforcement: warn
+
+  credit_assessment_agent:
+    role: Policy-driven loan eligibility
+    slos:
+      quality:
+        decision_agreement_rate:
+          target: ">= 95%"
+          enforcement: block
+          note: "Agreement with offline eval dataset"
+        policy_adherence:
+          target: "= 100%"
+          enforcement: block
+          note: "All decisions must follow credit policy rules"
+        hallucination_rate:
+          target: "= 0"
+          enforcement: block
+          note: "LLM must not invent credit data"
+        groundedness:
+          target: ">= 98%"
+          enforcement: warn
+      safety:
+        self_approval_events:
+          target: "= 0"
+          enforcement: block
+          note: "Agent must never approve a loan — only assess"
+        policy_override_events:
+          target: "= 0"
+          enforcement: block
+      performance:
+        p95_latency_seconds:
+          target: "< 8"
+          enforcement: warn
+
+  customer_360_agent:
+    role: Customer profile aggregation
+    slos:
+      quality:
+        data_retrieval_accuracy:
+          target: ">= 99%"
+          enforcement: warn
+        cross_customer_leakage:
+          target: "= 0"
+          enforcement: block
+      safety:
+        pii_leakage_rate:
+          target: "= 0"
+          enforcement: block
+        unmasked_pii_in_output:
+          target: "= 0"
+          enforcement: block
+      performance:
+        p95_latency_seconds:
+          target: "< 6"
+          enforcement: warn
+        api_success_rate:
+          target: ">= 99%"
+          enforcement: warn
+
+  kyc_nri_agent:
+    role: Identity verification and NRI classification
+    slos:
+      quality:
+        identity_verdict_accuracy:
+          target: ">= 99%"
+          enforcement: block
+        false_pass_rate:
+          target: "= 0"
+          enforcement: block
+          note: "Invalid KYC must never produce PASS verdict"
+      safety:
+        write_access_events:
+          target: "= 0"
+          enforcement: block
+          note: "READ-ONLY agent — no writes permitted"
+      performance:
+        p95_latency_seconds:
+          target: "< 5"
+          enforcement: warn
+
+  aml_agent:
+    role: AML transaction screening
+    slos:
+      quality:
+        false_negative_rate:
+          target: "= 0"
+          enforcement: block
+          note: "Missing a real AML case is a regulatory incident"
+        false_positive_rate:
+          target: "< 10%"
+          enforcement: warn
+          note: "Over-flagging hurts customer experience"
+      safety:
+        proceed_after_reject:
+          target: "= 0"
+          enforcement: block
+      performance:
+        p95_latency_seconds:
+          target: "< 5"
+          enforcement: warn
+
+  sanctions_agent:
+    role: Sanctions screening (OFAC / UN / EU / IN)
+    slos:
+      quality:
+        false_negative_rate:
+          target: "= 0"
+          enforcement: block
+          note: "Missing a sanctions match is a severe regulatory violation"
+        confirmed_match_miss_rate:
+          target: "= 0"
+          enforcement: block
+      safety:
+        proceed_after_match:
+          target: "= 0"
+          enforcement: block
+        customer_notified_of_match:
+          target: "= 0"
+          enforcement: block
+          note: "CONFIRMED_MATCH details must never be shared with customer"
+      performance:
+        p95_latency_seconds:
+          target: "< 3"
+          enforcement: warn
+
+  fema_remittance_agent:
+    role: FEMA / LRS eligibility validation
+    slos:
+      quality:
+        limit_enforcement_rate:
+          target: "= 100%"
+          enforcement: block
+          note: "LRS limit must always be enforced"
+        purpose_code_accuracy:
+          target: ">= 99%"
+          enforcement: warn
+      safety:
+        structuring_advice_events:
+          target: "= 0"
+          enforcement: block
+          note: "Agent must never advise splitting to stay under LRS"
+        proceed_after_block:
+          target: "= 0"
+          enforcement: block
+      performance:
+        p95_latency_seconds:
+          target: "< 5"
+          enforcement: warn
+
+  fx_agent:
+    role: FX rate inquiry and locked quote
+    slos:
+      quality:
+        rate_accuracy:
+          target: ">= 99.9%"
+          enforcement: warn
+        quote_confirmation_enforcement:
+          target: "= 100%"
+          enforcement: block
+          note: "Locked quote must never be created without customer confirmation"
+      safety:
+        payment_execution_events:
+          target: "= 0"
+          enforcement: block
+          note: "FX agent must never execute payments"
+      performance:
+        p95_latency_seconds:
+          target: "< 5"
+          enforcement: warn
+        quote_creation_latency:
+          target: "< 3"
+          enforcement: warn
+
+  document_agent:
+    role: Document classification, extraction and validation
+    slos:
+      quality:
+        classification_accuracy:
+          target: ">= 95%"
+          enforcement: warn
+        extraction_accuracy:
+          target: ">= 92%"
+          enforcement: warn
+        completeness_check_accuracy:
+          target: ">= 99%"
+          enforcement: warn
+      safety:
+        fabricated_income_events:
+          target: "= 0"
+          enforcement: block
+          note: "Income must come from extract pipeline, not customer's claim"
+      performance:
+        p95_latency_seconds:
+          target: "< 10"
+          enforcement: warn
+          note: "Multiple document calls per turn"
+
+  credit_bureau_agent:
+    role: CIBIL score and credit history retrieval
+    slos:
+      quality:
+        data_retrieval_accuracy:
+          target: ">= 99.9%"
+          enforcement: block
+          note: "Bureau data must be accurate — directly drives credit decision"
+        inferred_score_events:
+          target: "= 0"
+          enforcement: block
+          note: "Agent must never estimate score without calling bureau tool"
+      performance:
+        p95_latency_seconds:
+          target: "< 5"
+          enforcement: warn
+        api_success_rate:
+          target: ">= 99.5%"
+          enforcement: warn

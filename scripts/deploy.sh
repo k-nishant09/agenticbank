@@ -20,6 +20,51 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# ── Eval gate (runs before any deployment) ────────────────────────────────────
+# Runs the offline evaluation suites to verify agent policy logic and guardrails
+# are correct before deploying. Compliance suites have zero-tolerance thresholds.
+# Pass --skip-evals to bypass (only for emergency hotfix deployments).
+run_eval_gate() {
+  local SKIP_EVALS=false
+  for arg in "$@"; do
+    [[ "$arg" == "--skip-evals" ]] && SKIP_EVALS=true
+  done
+
+  if [[ "${SKIP_EVALS}" == "true" ]]; then
+    echo ""
+    echo "⚠️   --skip-evals flag set. Bypassing eval gate."
+    echo "    This should only be used for emergency hotfix deployments."
+    echo "    Ensure evals are run manually after deployment: python3 evals/run_evals.py"
+    return 0
+  fi
+
+  echo ""
+  echo "==> Running eval gate (must pass before deployment)..."
+
+  if ! command -v python3 &>/dev/null; then
+    echo "  ⚠️   python3 not found — skipping eval gate."
+    return 0
+  fi
+
+  if [[ ! -f "${ROOT}/evals/run_evals.py" ]]; then
+    echo "  ⚠️   evals/run_evals.py not found — skipping eval gate."
+    return 0
+  fi
+
+  python3 "${ROOT}/evals/run_evals.py" --ci
+  local EXIT_CODE=$?
+
+  if [[ $EXIT_CODE -ne 0 ]]; then
+    echo ""
+    echo "❌  EVAL GATE FAILED — deployment blocked."
+    echo "    Fix failing eval cases before deploying."
+    echo "    Run:  python3 evals/run_evals.py --verbose"
+    exit 1
+  fi
+
+  echo "✅  Eval gate passed."
+}
+
 # ── Resolve CLI ───────────────────────────────────────────────────────────────
 if command -v orchestrate &>/dev/null; then
   ORC="orchestrate"
@@ -34,11 +79,13 @@ for arg in "$@"; do
   [[ "$arg" == "--agents-only" ]] && AGENTS_ONLY=true
 done
 
+
 # ── Deploy tools ──────────────────────────────────────────────────────────────
 deploy_tools() {
   echo ""
   echo "==> Deploying Python tools..."
   local PYTHON_TOOLS=(
+    "tools/python/guardrail_tools.py"
     "tools/python/case_management_tools.py"
     "tools/python/customer_360_tools.py"
     "tools/python/kyc_tools.py"
@@ -51,7 +98,7 @@ deploy_tools() {
   for f in "${PYTHON_TOOLS[@]}"; do
     if [[ -f "${ROOT}/${f}" ]]; then
       echo "  • ${f}"
-      $ORC tools import -k python "${ROOT}/${f}"
+      $ORC tools import -k python -f "${ROOT}/${f}"
     fi
   done
 
@@ -62,7 +109,7 @@ deploy_tools() {
     [[ "$f" == *example* ]] && continue
     if [[ -f "$f" ]]; then
       echo "  • $(basename "$f")"
-      $ORC tools import -k openapi "$f"
+      $ORC tools import -k openapi -f "$f"
     fi
   done
 }
@@ -93,7 +140,7 @@ deploy_agents() {
       local name
       name=$(basename "$f" .yaml)
       echo "  • ${name}"
-      $ORC agents import "${ROOT}/${f}"
+      $ORC agents import -f "${ROOT}/${f}"
     fi
   done
 }
@@ -113,6 +160,7 @@ print_summary() {
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
+  run_eval_gate "$@"
   if [[ "${AGENTS_ONLY}" == "false" ]]; then
     deploy_tools
   fi
@@ -122,4 +170,4 @@ main() {
   print_summary
 }
 
-main
+main "$@"

@@ -23,6 +23,16 @@ instructions: |
   2. What the next step will be
   3. Ask them to reply "continue" (or provide any needed information) to proceed
 
+  ## GUARDRAIL RULE — validate every input before acting
+  Before processing any customer message (except Step 1 intake), call validate_agent_input
+  with the raw customer message and their customer_id.
+  If the result is BLOCKED, stop immediately and report to the customer. Do not proceed.
+
+  ## CIRCUIT BREAKER RULE — record every delegation
+  Before delegating to any collaborator agent, call record_agent_call with the case_id
+  and the collaborator name. If circuit_breaker_status is OPEN, call escalate_to_human
+  with escalation_type=EXCEPTION. Do not delegate.
+
   ## Step sequence (one per turn)
 
   ### Step 1 — Case intake (do this on the first message)
@@ -31,34 +41,41 @@ instructions: |
   - STOP. Do not call any collaborator yet.
 
   ### Step 2 — Customer 360
+  - Call validate_agent_input. If BLOCKED, stop.
+  - Call record_agent_call(case_id, "customer_360_agent"). If circuit breaker OPEN, escalate.
   - Delegate to customer_360_agent for the customer profile.
   - Call add_case_artifact with artifactType "customer360".
   - Call advance_case_state to IDENTITY_VERIFIED.
   - Tell the customer the profile summary, then STOP.
 
   ### Step 3 — KYC and NRI verification
+  - Call record_agent_call(case_id, "kyc_nri_agent").
   - Delegate to kyc_nri_agent.
   - If identityVerdict is FAIL or PENDING: call escalate_to_human(EXCEPTION). STOP permanently.
   - If PASS: call add_case_artifact "kycResult", advance_case_state to CREDIT_ASSESSMENT.
   - Report KYC outcome to the customer, then STOP.
 
   ### Step 4 — Credit Bureau
+  - Call record_agent_call(case_id, "credit_bureau_agent").
   - Delegate to credit_bureau_agent.
   - Call add_case_artifact "creditBureau".
   - Report CIBIL score and key figures, then STOP.
 
   ### Step 5 — Document completeness
+  - Call record_agent_call(case_id, "document_agent").
   - Delegate to document_agent. Pass the submitted document IDs and loan product.
   - If isComplete is false: list missing documents and ask the customer to upload them. STOP.
   - If complete: call add_case_artifact "documentChecklist". Report completion, then STOP.
 
   ### Step 6 — Credit Assessment
+  - Call record_agent_call(case_id, "credit_assessment_agent").
   - Delegate to credit_assessment_agent. Include CIBIL score, income, EMI and segment from earlier artifacts.
   - PRELIMINARY_ELIGIBLE: call add_case_artifact "creditAssessment", advance to LOAN_ELIGIBLE. Report result. STOP.
   - MANUAL_REVIEW_REQUIRED: call escalate_to_human(CREDIT_REVIEW, "credit-committee"), advance to HUMAN_REVIEW. STOP permanently until resolved.
   - NOT_ELIGIBLE: advance to REJECTED, tell the customer the specific reasons. STOP permanently.
 
   ### Step 7 — Compliance
+  - Call record_agent_call(case_id, "compliance_supervisor_agent").
   - Delegate to compliance_supervisor_agent. Include customer ID, remittance amount and destination.
   - ESCALATED or BLOCKED: case is already in HUMAN_REVIEW. STOP permanently.
   - CLEARED: call add_case_artifact "complianceResult", advance to APPROVED. Report result. STOP.
@@ -68,6 +85,7 @@ instructions: |
   - Tell the customer the case is with the credit approvals team (SLA 4 hours). STOP permanently until the human resumes the case.
 
   ### Step 9 — FX Quote
+  - Call record_agent_call(case_id, "fx_agent").
   - Delegate to fx_agent. Get the indicative INR→target-currency rate and quote.
   - Present: source amount, indicative rate, converted amount, total fees (incl. GST), quote expiry.
   - Ask the customer to explicitly confirm they wish to proceed. STOP and wait for confirmation.
@@ -75,6 +93,7 @@ instructions: |
   ### Step 10 — Payment
   - On customer confirmation of FX quote: call add_case_artifact "fxQuote", advance to CUSTOMER_CONFIRM.
   - Advance to PAYMENT_READY.
+  - Call record_agent_call(case_id, "payment_agent").
   - Delegate to payment_agent. Verify all pre-conditions are met.
   - On SUBMITTED: call add_case_artifact "paymentResult", advance to EXECUTED. STOP.
 
@@ -97,6 +116,7 @@ instructions: |
   - NEVER skip a human approval gate.
   - NEVER share one agent's full output with an unrelated agent.
   - NEVER proceed when a required step is pending or in HUMAN_REVIEW.
+  - NEVER skip validate_agent_input or record_agent_call.
 
 collaborators:
   - customer_360_agent
@@ -113,6 +133,12 @@ tools:
   - get_case
   - add_case_artifact
   - escalate_to_human
+  - validate_agent_input
+  - record_agent_call
+  - get_case_call_counts
+# Prompt metadata (not parsed by ADK — tracked in prompts/PROMPT_REGISTRY.yaml)
+# prompt_version: v2
+# prompt_file: prompts/supervisor/v2.md
 config:
   hidden: false
   enable_cot: true

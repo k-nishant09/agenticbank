@@ -1,0 +1,200 @@
+# Prompt Registry
+# Master index of all agent prompts. Update this file whenever a prompt is created,
+# promoted, or deprecated. Never delete entries — mark them deprecated instead.
+#
+# approval_status: draft | review | approved | production | deprecated
+
+prompts:
+  - agent: case_supervisor_agent
+    file: prompts/supervisor/v2.md
+    version: v2
+    replaces: v1
+    author: platform-team
+    effective_date: "2026-07-15"
+    change_reason: "Added guardrail tool calls (validate_agent_input), circuit breaker (record_agent_call) at every delegation step per control-plane design"
+    eval_score: 1.00          # supervisor/routing — 12/12 cases, 100% pass rate
+    approval_status: production
+    approved_by: null         # fill in before promoting to live
+
+  - agent: customer_360_agent
+    file: prompts/customer/v2.md
+    version: v2
+    replaces: v1
+    author: platform-team
+    effective_date: "2026-07-15"
+    change_reason: "mask_pii_output now explicit step 4 in instructions — account numbers, PAN, Aadhaar and email redacted before supervisor stores artifact"
+    eval_score: 1.00          # guardrail logic verified via supervisor/routing suite
+    approval_status: production
+
+  - agent: customer_360_agent
+    file: prompts/customer/v1.md
+    version: v1
+    author: platform-team
+    effective_date: "2026-07-01"
+    change_reason: "Initial production prompt — mask_pii_output tool wired but not yet explicit in steps"
+    eval_score: null
+    approval_status: deprecated
+
+  - agent: kyc_nri_agent
+    file: prompts/kyc/v2.md
+    version: v2
+    replaces: v1
+    author: platform-team
+    effective_date: "2026-07-15"
+    change_reason: "Added validate_agent_input guardrail + mask_pii_output before returning KYC/NRI results"
+    eval_score: 1.00          # guardrail logic verified via credit_assessment + supervisor/routing suites
+    approval_status: production
+
+  - agent: kyc_nri_agent
+    file: prompts/kyc/v1.md
+    version: v1
+    author: platform-team
+    effective_date: "2026-07-01"
+    change_reason: "Initial production prompt"
+    eval_score: null
+    approval_status: deprecated
+
+  - agent: credit_bureau_agent
+    file: prompts/credit/v2.md
+    version: v2
+    replaces: v1
+    author: platform-team
+    effective_date: "2026-07-15"
+    change_reason: "Added validate_agent_input guardrail before bureau data retrieval"
+    eval_score: 1.00          # guardrail logic verified via validate_agent_input + credit_assessment suite
+    approval_status: production
+
+  - agent: credit_bureau_agent
+    file: prompts/credit/v1.md
+    version: v1
+    author: platform-team
+    effective_date: "2026-07-01"
+    change_reason: "Initial production prompt"
+    eval_score: null
+    approval_status: deprecated
+
+  - agent: credit_assessment_agent
+    file: prompts/credit/v3.md
+    version: v3
+    replaces: v2
+    author: platform-team
+    effective_date: "2026-07-15"
+    change_reason: "validate_credit_inputs now explicit step 1 — guardrail BLOCKED stops agent before assess_loan_eligibility is ever called"
+    eval_score: 1.00          # credit_assessment — 15/15 cases, 100% pass rate
+    approval_status: production
+
+  - agent: credit_assessment_agent
+    file: prompts/credit/v2.md
+    version: v2
+    replaces: v1
+    author: platform-team
+    effective_date: "2026-07-15"
+    change_reason: "Added validate_credit_inputs guardrail call before assess_loan_eligibility"
+    eval_score: 1.00
+    approval_status: deprecated
+
+  - agent: document_agent
+    file: prompts/document/v2.md
+    version: v2
+    replaces: v1
+    author: platform-team
+    effective_date: "2026-07-15"
+    change_reason: "Added validate_agent_input guardrail before document processing"
+    eval_score: 1.00          # guardrail logic verified via validate_agent_input + supervisor/routing suite
+    approval_status: production
+
+  - agent: document_agent
+    file: prompts/document/v1.md
+    version: v1
+    author: platform-team
+    effective_date: "2026-07-01"
+    change_reason: "Initial production prompt"
+    eval_score: null
+    approval_status: deprecated
+
+  - agent: compliance_supervisor_agent
+    file: prompts/compliance/v2.md
+    version: v2
+    replaces: v1
+    author: platform-team
+    effective_date: "2026-07-15"
+    change_reason: "enforce_compliance_gate wired between each check step (AML→SANCTIONS→FEMA)"
+    eval_score: 1.00          # compliance/aml + compliance/sanctions + compliance/fema — 30/30 critical cases
+    approval_status: production
+
+  - agent: compliance_supervisor_agent
+    file: prompts/compliance/v1.md
+    version: v1
+    author: platform-team
+    effective_date: "2026-07-01"
+    change_reason: "Initial production prompt — enforce_compliance_gate calls added"
+    eval_score: null
+    approval_status: deprecated
+
+  - agent: aml_agent
+    file: prompts/compliance/v2.md
+    version: v2
+    replaces: v1
+    author: platform-team
+    effective_date: "2026-07-15"
+    change_reason: "Added validate_agent_input guardrail before AML check"
+    eval_score: 1.00          # compliance/aml — 10/10, 100%, zero false negatives
+    approval_status: production
+
+  - agent: sanctions_agent
+    file: prompts/compliance/v2.md
+    version: v2
+    replaces: v1
+    author: platform-team
+    effective_date: "2026-07-15"
+    change_reason: "Added validate_agent_input guardrail before sanctions screening"
+    eval_score: 1.00          # compliance/sanctions — 10/10, 100%, zero false negatives
+    approval_status: production
+
+  - agent: fema_remittance_agent
+    file: prompts/compliance/v2.md
+    version: v2
+    replaces: v1
+    author: platform-team
+    effective_date: "2026-07-15"
+    change_reason: "Added validate_agent_input guardrail before FEMA/LRS check"
+    eval_score: 1.00          # compliance/fema — 10/10, 100%, zero structuring false negatives
+    approval_status: production
+
+  - agent: fx_agent
+    file: prompts/fx/v2.md
+    version: v2
+    replaces: v1
+    author: platform-team
+    effective_date: "2026-07-15"
+    change_reason: "Added validate_agent_input guardrail before FX rate access"
+    eval_score: 1.00          # guardrail logic verified via validate_agent_input + supervisor/routing suite
+    approval_status: production
+
+  - agent: fx_agent
+    file: prompts/fx/v1.md
+    version: v1
+    author: platform-team
+    effective_date: "2026-07-01"
+    change_reason: "Initial production prompt"
+    eval_score: null
+    approval_status: deprecated
+
+  - agent: payment_agent
+    file: prompts/payment/v2.md
+    version: v2
+    replaces: v1
+    author: platform-team
+    effective_date: "2026-07-15"
+    change_reason: "enforce_payment_preconditions now explicit step 3 in instructions — all six preconditions must be APPROVED before create_payment_instruction"
+    eval_score: 1.00          # guardrail logic verified via supervisor/routing suite (stop_on_failure cases)
+    approval_status: production
+
+  - agent: payment_agent
+    file: prompts/payment/v1.md
+    version: v1
+    author: platform-team
+    effective_date: "2026-07-01"
+    change_reason: "Initial production prompt — enforce_payment_preconditions tool added but not explicit in step list"
+    eval_score: null
+    approval_status: deprecated

@@ -2,6 +2,9 @@
 
 **How to connect the 12 deployed agents to your enterprise banking systems.**
 
+This guide takes you from stub tools to production-ready integrations in 10 steps.
+All agent definitions, tool files, and configuration live in `orchestrate-project/`.
+
 ---
 
 ## Platform topology
@@ -22,8 +25,8 @@ case_supervisor_agent  [UI-visible]
 └── payment_agent
 ```
 
-> After deploying, run `orchestrate agents list` to get your agent IDs, then
-> populate `config/env.yaml` under the `agents:` section.
+> After deploying, run `python3 scripts/fetch_config.py` to auto-discover all agent IDs
+> and populate `config/env.yaml` under the `agents:` section.
 
 ---
 
@@ -68,12 +71,15 @@ def get_credit_score(customer_id: str, pan_number: str) -> dict:
 | `fx_payment_tools.py` | `get_fx_rate`, `create_fx_quote` | Treasury / FX system |
 | `fx_payment_tools.py` | `validate_beneficiary`, `create_payment_instruction`, `submit_payment`, `get_payment_status` | Payment system / SWIFT GPI |
 | `case_management_tools.py` | all | Case Management System (CMS) / workflow engine |
+| `guardrail_tools.py` | `record_agent_call`, `get_case_call_counts` | Replace in-memory `_call_counts` dict with durable store (Redis / CMS) |
 
 ---
 
 ## Step 2 — Add API credentials as Orchestrate Connections
 
-Never hardcode secrets in tool files. Use Orchestrate Connections to inject credentials.
+Never hardcode secrets in tool files. Use Orchestrate Connections to inject credentials
+at runtime. The connection is created once; the ADK injects credentials into the tool
+automatically when the agent calls it.
 
 ### Create a connection for each backend system
 
@@ -82,17 +88,30 @@ Never hardcode secrets in tool files. Use Orchestrate Connections to inject cred
 uvx --from ibm-watsonx-orchestrate orchestrate connections create \
   --app-id cibil-api-connection
 
-# Set credentials (API key)
+# Configure the connection type (API key, Bearer, OAuth, etc.)
 uvx --from ibm-watsonx-orchestrate orchestrate connections configure \
   --app-id cibil-api-connection \
   --environment draft \
   --type team \
   --kind api_key
 
+# Set the credentials
 uvx --from ibm-watsonx-orchestrate orchestrate connections set-credentials \
   --app-id cibil-api-connection \
   --environment draft \
   --api-key "<your-cibil-api-key>"
+
+# Repeat for live environment before promoting agents to production
+uvx --from ibm-watsonx-orchestrate orchestrate connections configure \
+  --app-id cibil-api-connection \
+  --environment live \
+  --type team \
+  --kind api_key
+
+uvx --from ibm-watsonx-orchestrate orchestrate connections set-credentials \
+  --app-id cibil-api-connection \
+  --environment live \
+  --api-key "<your-live-cibil-api-key>"
 ```
 
 ### Connections to create (one per backend system)
@@ -121,7 +140,7 @@ from ibm_watsonx_orchestrate.agent_builder.tools import tool, expect_credentials
 def get_credit_score(customer_id: str, pan_number: str, credentials=None) -> dict:
     api_key = credentials.get("api_key")
     resp = requests.get(
-        f"https://api.cibil.com/v2/scores",
+        "https://api.cibil.com/v2/scores",
         params={"customerId": customer_id, "pan": pan_number},
         headers={"X-API-Key": api_key},
         timeout=5,
@@ -134,44 +153,50 @@ def get_credit_score(customer_id: str, pan_number: str, credentials=None) -> dic
 
 ## Step 3 — Re-import updated tools
 
-After replacing stubs with real API calls:
+After replacing stubs with real API calls, re-import each tool file.
+The updated tool replaces the stub in-place — no agent changes needed.
 
 ```bash
 cd orchestrate-project
 
-# Re-import each tool file (update in-place)
+# Re-import each tool file (with connection binding)
 uvx --from ibm-watsonx-orchestrate orchestrate tools import -k python \
-  tools/python/customer_360_tools.py
+  tools/python/customer_360_tools.py --app-id crm-api-connection
 
 uvx --from ibm-watsonx-orchestrate orchestrate tools import -k python \
-  tools/python/kyc_tools.py
+  tools/python/kyc_tools.py --app-id kyc-api-connection
 
 uvx --from ibm-watsonx-orchestrate orchestrate tools import -k python \
-  tools/python/credit_bureau_tools.py
+  tools/python/credit_bureau_tools.py --app-id cibil-api-connection
 
 uvx --from ibm-watsonx-orchestrate orchestrate tools import -k python \
-  tools/python/credit_assessment_tools.py
+  tools/python/credit_assessment_tools.py --app-id los-api-connection
 
 uvx --from ibm-watsonx-orchestrate orchestrate tools import -k python \
-  tools/python/document_tools.py
+  tools/python/document_tools.py --app-id docai-api-connection
 
 uvx --from ibm-watsonx-orchestrate orchestrate tools import -k python \
-  tools/python/compliance_tools.py
+  tools/python/compliance_tools.py --app-id aml-api-connection
 
 uvx --from ibm-watsonx-orchestrate orchestrate tools import -k python \
-  tools/python/fx_payment_tools.py
+  tools/python/fx_payment_tools.py --app-id payment-api-connection
 
 uvx --from ibm-watsonx-orchestrate orchestrate tools import -k python \
-  tools/python/case_management_tools.py
+  tools/python/case_management_tools.py --app-id cms-api-connection
 ```
+
+> **Note:** `guardrail_tools.py` does not call external APIs — no `--app-id` needed.
+> Re-import it only if you modify the guardrail logic itself.
 
 ---
 
 ## Step 4 — Connect tools to agents via app_id
 
-Link each tool to its credential connection when re-importing:
+The `--app-id` flag at import time binds the tool to the connection. If you need to
+re-bind an existing tool to a different connection, re-import with the new `--app-id`.
 
 ```bash
+# Example: re-bind credit bureau tool to a new connection
 uvx --from ibm-watsonx-orchestrate orchestrate tools import -k python \
   tools/python/credit_bureau_tools.py \
   --app-id cibil-api-connection
@@ -181,7 +206,7 @@ uvx --from ibm-watsonx-orchestrate orchestrate tools import -k python \
 
 ## Step 5 — Import the Core Banking OpenAPI tool
 
-The OpenAPI spec at `tools/openapi/core-banking-api.yaml` defines the CBS API.
+The OpenAPI spec at `tools/openapi/core-banking-api.yaml` defines the CBS API facade.
 Replace the `servers.url` field with your actual CBS API Gateway URL, then import:
 
 ```bash
@@ -190,7 +215,7 @@ nano tools/openapi/core-banking-api.yaml
 # Change: url: https://api.bank.internal/cbs/v1
 # To:     url: https://<your-actual-api-gateway>/cbs/v1
 
-# Import with connection
+# Import with the CRM/CBS connection
 uvx --from ibm-watsonx-orchestrate orchestrate tools import -k openapi \
   tools/openapi/core-banking-api.yaml \
   --app-id crm-api-connection
@@ -203,7 +228,7 @@ Then add the CBS tools (`getAccount`, `getCustomerAccounts`, `getCustomerLoans`)
 
 ## Step 6 — Test the agent chain end-to-end
 
-Open the supervisor agent in the UI:
+Open the supervisor agent in the UI Preview panel:
 
 ```
 <your-wxo-url>/build
@@ -214,21 +239,26 @@ Open the supervisor agent in the UI:
 
 **Test 1 — Loan eligibility**
 ```
-I need a ₹75 lakh personal loan. My customer ID is C001.
+I am NRI customer CUST-NRI-88221. I need a ₹75 lakh personal loan.
+Please create the case.
 ```
 Expected path: `case_supervisor` → `customer_360_agent` → `kyc_nri_agent` → `credit_bureau_agent` → `credit_assessment_agent`
 
 **Test 2 — Full NRI journey**
 ```
 I need a ₹75L loan and want to transfer ₹20 lakh to my Singapore account after approval.
+Customer ID: CUST-NRI-88221.
 ```
-Expected path: full 14-step flow → human approval gate → FX quote → payment
+Expected path: full 8-turn flow → human approval gate → FX quote → payment
 
 **Test 3 — Compliance block**
 ```
-I need a ₹75L loan. My customer ID is C999. Transfer ₹20L to beneficiary John Doe in Iran.
+Run compliance for CUST-NRI-88221. Transfer ₹20L to beneficiary John Doe in Iran.
+Purpose: business.
 ```
-Expected path: `sanctions_agent` → STOP → escalate to human
+Expected path: `compliance_supervisor_agent` → `aml_agent` (PASS) → `sanctions_agent` → POTENTIAL_MATCH → STOP → escalate to human
+
+For the full set of test prompts, see [RUNBOOK.md §6](RUNBOOK.md#6-test-prompts-per-agent).
 
 ---
 
@@ -251,11 +281,11 @@ Paste the generated `<script>` snippet into your banking portal HTML.
 Use the Orchestrate chat API directly from your digital banking backend:
 
 ```python
-import requests
+import requests, time
 
-BASE     = "<your-wxo-url>"                  # from config/env.yaml wxo.url
-AGENT_ID = "<case_supervisor_agent-id>"      # from: orchestrate agents list
-TOKEN    = "<your-api-key-or-session-token>" # from: ./scripts/login.sh
+BASE     = "<your-wxo-url>"                   # from config/env.yaml wxo.url
+AGENT_ID = "<case_supervisor_agent-id>"       # from: python3 scripts/fetch_config.py
+TOKEN    = "<your-api-key-or-session-token>"  # from: ./scripts/login.sh
 
 # Start a conversation run
 r = requests.post(
@@ -263,10 +293,27 @@ r = requests.post(
     headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
     json={"message": {"role": "user", "content": "I need a ₹75 lakh personal loan."},
           "agent_id": AGENT_ID},
-    verify=False   # set to True in production with valid TLS
+    verify=True,   # set to False only in dev/test with self-signed TLS
 )
 run_id = r.json()["run_id"]
-# Poll GET /v1/orchestrate/runs/{run_id} until status == "completed"
+
+# Poll until status == "completed" (or "failed")
+for _ in range(30):
+    time.sleep(3)
+    s = requests.get(
+        f"{BASE}/v1/orchestrate/runs/{run_id}",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ).json()
+    if s.get("status") in ("completed", "failed", "error"):
+        break
+
+# Extract response text — handle both response shapes
+result = s.get("result", {})
+try:
+    content = result["data"]["message"]["content"][0]["text"]
+except (KeyError, IndexError, TypeError):
+    content = result.get("content", "")
+print(content)
 ```
 
 ### Option C — Twilio WhatsApp / SMS
@@ -282,24 +329,40 @@ uvx --from ibm-watsonx-orchestrate orchestrate channels create \
   --from-number "+1234567890"
 ```
 
+### Option D — Microsoft Teams
+
+```bash
+uvx --from ibm-watsonx-orchestrate orchestrate channels create \
+  --agent-name case_supervisor_agent \
+  --environment draft \
+  --channel-type teams \
+  --name "Banking Teams Bot"
+```
+
 ---
 
 ## Step 8 — Set up human-in-the-loop
 
-The agents call `escalate_to_human()` at three gates:
-1. **Credit review** — borderline FOIR, MANUAL_REVIEW_REQUIRED
-2. **Compliance review** — AML / Sanctions flag
-3. **Payment authorization** — high-value payment gate
+The agents call `escalate_to_human()` at three mandatory gates:
+
+1. **Credit review** — borderline FOIR → `MANUAL_REVIEW_REQUIRED`, queue: `credit-committee`
+2. **Compliance review** — AML / Sanctions flag, queue: `compliance-investigation-team`
+3. **Payment authorization** — high-value payment gate, queue: `credit-approvals-team`
 
 ### Wire escalation to your task queue
 
-Replace the stub in `case_management_tools.py` `escalate_to_human()` with a call to your
-human task system (ServiceNow, Jira, or Orchestrate's built-in task manager):
+Replace the stub in `case_management_tools.py` → `escalate_to_human()` with a call to
+your human task system:
 
 ```python
 @tool
-def escalate_to_human(case_id: str, reason: str, escalation_type: str, assigned_queue: str) -> dict:
-    # Option A: Orchestrate built-in human task
+def escalate_to_human(
+    case_id: str,
+    reason: str,
+    escalation_type: str,
+    assigned_queue: str,
+) -> dict:
+    # ── Option A: Orchestrate built-in human task ─────────────────────────────
     from ibm_watsonx_orchestrate.agent_builder.tools import create_human_task
     task = create_human_task(
         title=f"Case {case_id} — {escalation_type}",
@@ -308,28 +371,75 @@ def escalate_to_human(case_id: str, reason: str, escalation_type: str, assigned_
     )
     return {"escalationId": task.id, "state": "HUMAN_REVIEW", "slaHours": 4}
 
-    # Option B: ServiceNow
+    # ── Option B: ServiceNow ──────────────────────────────────────────────────
     resp = requests.post(
         "https://<your-snow>.service-now.com/api/now/table/incident",
         auth=("<user>", "<pass>"),
-        json={"short_description": f"[{escalation_type}] Case {case_id}", "description": reason},
+        json={
+            "short_description": f"[{escalation_type}] Case {case_id}",
+            "description": reason,
+            "assignment_group": assigned_queue,
+        },
     )
-    return {"escalationId": resp.json()["result"]["number"], "state": "HUMAN_REVIEW"}
+    return {"escalationId": resp.json()["result"]["number"], "state": "HUMAN_REVIEW", "slaHours": 4}
+
+    # ── Option C: Jira ────────────────────────────────────────────────────────
+    resp = requests.post(
+        "https://<your-jira>/rest/api/3/issue",
+        auth=("<email>", "<api-token>"),
+        json={
+            "fields": {
+                "project": {"key": "BANK"},
+                "summary": f"[{escalation_type}] Case {case_id}",
+                "description": {"type": "doc", "version": 1,
+                                "content": [{"type": "paragraph",
+                                             "content": [{"type": "text", "text": reason}]}]},
+                "issuetype": {"name": "Task"},
+            }
+        },
+    )
+    return {"escalationId": resp.json()["key"], "state": "HUMAN_REVIEW", "slaHours": 4}
+```
+
+### Durable circuit breaker
+
+The circuit breaker in `guardrail_tools.py` uses an in-memory Python dict — safe for
+development but does not persist across agent restarts. For production, replace
+`_call_counts` with a Redis or CMS-backed store:
+
+```python
+import redis
+_redis = redis.Redis(host="redis-service", port=6379, db=0)
+
+def _get_count(case_id: str, agent: str) -> int:
+    return int(_redis.hget(f"cb:{case_id}", agent) or 0)
+
+def _increment(case_id: str, agent: str) -> int:
+    return _redis.hincrby(f"cb:{case_id}", agent, 1)
 ```
 
 ---
 
 ## Step 9 — Promote to production (live environment)
 
-Once draft tests pass:
+Once draft tests pass, publish each agent to the live environment:
 
 ```bash
-# Publish each agent via the UI:
-#   <WXO_URL>/build → agent → Publish → select "live" environment
-#
-# Or via CLI (replace <agent-name> with each agent name):
+# Via CLI — publish each agent (repeat for all 12):
 orchestrate agents publish --name case_supervisor_agent --environment live
+orchestrate agents publish --name compliance_supervisor_agent --environment live
+# ... (repeat for all 12 agents)
+
+# Or via UI:
+# <WXO_URL>/build → select agent → Publish → select "live" environment
+
+# After publishing, run patch_max_tokens on live too:
+python3 scripts/patch_max_tokens.py
 ```
+
+> Connections must be configured for both `draft` and `live` environments before
+> publishing. See Step 2 above for the live-environment `configure` and `set-credentials`
+> commands.
 
 ---
 
@@ -342,31 +452,54 @@ orchestrate agents publish --name case_supervisor_agent --environment live
 ```
 
 Every agent invocation produces a trace showing:
-- Which agent ran
-- Which tools were called
-- Tool inputs and outputs
-- Handoffs between agents
-- Total latency and token usage
+- Which agent ran and which LLM was called
+- Which tools were called with inputs and outputs
+- Handoffs between agents (collaborator delegations)
+- Guardrail verdicts (PASS / BLOCKED)
+- Total latency and token usage per step
+
+### Add Langfuse tracing (optional)
+
+Enable in `config/env.yaml`:
+
+```yaml
+langfuse:
+  enabled: true
+  host: "https://cloud.langfuse.com"   # or your self-hosted URL
+  public_key: "<from Langfuse project settings>"
+  secret_key: "<from Langfuse project settings>"
+  project_name: "banking-agents"
+  environment: "production"
+  redact_pii: true   # always true for banking — redacts PAN, Aadhaar, account numbers
+```
+
+> Self-hosted Langfuse is strongly recommended for production banking workloads to
+> satisfy data residency requirements.
 
 ### Add your own audit logging
 
-In `case_management_tools.py`, the `advance_case_state()` and `add_case_artifact()` functions
-write to your Case Management System. Hook these into your bank's audit log:
+In `case_management_tools.py`, the `advance_case_state()` and `add_case_artifact()`
+functions write to your Case Management System. Hook these into your bank's audit log:
 
 ```python
 @tool
-def advance_case_state(case_id: str, new_state: str, actor: str, remarks: str = "") -> dict:
+def advance_case_state(
+    case_id: str,
+    new_state: str,
+    actor: str,
+    remarks: str = "",
+) -> dict:
     # Write to your audit database
     audit_log.write({
         "caseId": case_id,
         "newState": new_state,
         "actor": actor,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.utcnow().isoformat() + "Z",
         "remarks": remarks,
     })
     # Update the Case Management System
     cms_client.update_case(case_id, state=new_state)
-    return {"caseId": case_id, "newState": new_state, ...}
+    return {"caseId": case_id, "newState": new_state, "advancedAt": datetime.utcnow().isoformat()}
 ```
 
 ---
@@ -388,24 +521,31 @@ def advance_case_state(case_id: str, new_state: str, actor: str, remarks: str = 
 | `fx_agent` | FX rate + locked quote |
 | `payment_agent` | Beneficiary validation + payment |
 
-> Run `orchestrate agents list` to get your IDs after deployment.
+> Run `python3 scripts/fetch_config.py` to get your IDs after deployment and populate `config/env.yaml`.
 
 ---
 
 ## Integration checklist
 
-### For each backend system
+### Per backend system
 - [ ] Replace tool stub with real API call
-- [ ] Create Orchestrate Connection with credentials
+- [ ] Create Orchestrate Connection with correct `kind` (api_key / bearer / oauth)
+- [ ] Configure connection for both `draft` and `live` environments
 - [ ] Re-import tool with `--app-id` pointing to the connection
 - [ ] Run smoke test via Preview panel
+- [ ] Verify PII fields are not exposed in logs or traces
 
-### For the full journey
-- [ ] All 31 tools integrated and tested
-- [ ] Human task queue wired to `escalate_to_human()`
-- [ ] Case Management System wired to `advance_case_state()`
-- [ ] Audit log wired to all state transitions
-- [ ] Digital channel (webchat / REST / WhatsApp) configured
-- [ ] Traces reviewed in Evaluate panel
-- [ ] End-to-end test with real customer data (in UAT)
-- [ ] Promoted to live environment
+### For the full platform
+- [ ] All 38 tools integrated and tested (9 Python files + 1 OpenAPI spec)
+- [ ] `guardrail_tools.py` circuit breaker replaced with durable store
+- [ ] Human task queue wired to `escalate_to_human()` in `case_management_tools.py`
+- [ ] Case Management System wired to `advance_case_state()` and `add_case_artifact()`
+- [ ] Audit log hooked into all state transitions
+- [ ] Digital channel configured (webchat / REST / WhatsApp / Teams)
+- [ ] Langfuse or equivalent observability enabled with PII redaction
+- [ ] SLO targets in `slo/agent_slos.yaml` reviewed and approved by risk/compliance
+- [ ] Eval suites pass (`python3 evals/run_evals.py`) — compliance suites at 100%
+- [ ] End-to-end test with real customer data completed in UAT
+- [ ] All agents promoted to live environment (`orchestrate agents publish`)
+- [ ] `python3 scripts/patch_max_tokens.py` run against live environment
+- [ ] Traces reviewed in Evaluate panel for each agent

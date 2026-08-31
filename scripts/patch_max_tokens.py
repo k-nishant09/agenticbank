@@ -66,7 +66,7 @@ def _load_token(env_name: str) -> str:
 def _discover_agents(base: str, headers: dict, verify: bool) -> dict:
     """Return name → full UUID dict for all agents on the instance."""
     # Page through if needed — try ?limit=100
-    r = requests.get(f"{base}/agents?limit=100", headers=headers, verify=verify, timeout=15)
+    r = requests.get(f"{base}/agents?limit=100&include_hidden=true", headers=headers, verify=verify, timeout=15)
     if r.status_code != 200:
         sys.exit(f"❌  GET /agents failed: {r.status_code}\n{r.text[:300]}")
     agents = r.json()
