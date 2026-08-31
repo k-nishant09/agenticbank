@@ -1,0 +1,195 @@
+openapi: 3.0.3
+info:
+  title: Core Banking System API
+  description: >
+    REST API facade for the bank's Core Banking System (CBS).
+    Exposes read-only account, transaction and product operations
+    consumed by banking agents via the API Gateway.
+    Agents NEVER connect directly to CBS — all access is through this facade.
+  version: "1.0.0"
+
+servers:
+  - url: https://api.bank.internal/cbs/v1
+    description: Internal API Gateway (enterprise network only)
+
+security:
+  - BearerAuth: []
+
+paths:
+  /accounts/{accountNumber}:
+    get:
+      operationId: getAccount
+      summary: Retrieve account details
+      description: Returns balance, status, product type and account metadata.
+      parameters:
+        - name: accountNumber
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Account details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "404":
+          description: Account not found
+
+  /accounts/{accountNumber}/transactions:
+    get:
+      operationId: getAccountTransactions
+      summary: Retrieve recent transactions for an account
+      parameters:
+        - name: accountNumber
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: toDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Transaction list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Transaction"
+
+  /customers/{customerId}/accounts:
+    get:
+      operationId: getCustomerAccounts
+      summary: List all accounts for a customer
+      parameters:
+        - name: customerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Account"
+
+  /customers/{customerId}/loans:
+    get:
+      operationId: getCustomerLoans
+      summary: List all active loan accounts for a customer
+      parameters:
+        - name: customerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of active loans
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Loan"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Account:
+      type: object
+      properties:
+        accountNumber:
+          type: string
+        customerId:
+          type: string
+        accountType:
+          type: string
+          enum: [CASA, NRE, NRO, FCNR, CURRENT, FIXED_DEPOSIT]
+        productCode:
+          type: string
+        balance:
+          type: number
+          format: double
+        currency:
+          type: string
+        status:
+          type: string
+          enum: [ACTIVE, DORMANT, FROZEN, CLOSED]
+        openDate:
+          type: string
+          format: date
+        branchCode:
+          type: string
+
+    Transaction:
+      type: object
+      properties:
+        transactionId:
+          type: string
+        accountNumber:
+          type: string
+        date:
+          type: string
+          format: date-time
+        amount:
+          type: number
+        currency:
+          type: string
+        type:
+          type: string
+          enum: [CREDIT, DEBIT]
+        description:
+          type: string
+        referenceNumber:
+          type: string
+
+    Loan:
+      type: object
+      properties:
+        loanId:
+          type: string
+        customerId:
+          type: string
+        product:
+          type: string
+        sanctionedAmount:
+          type: number
+        outstanding:
+          type: number
+        emi:
+          type: number
+        tenureMonths:
+          type: integer
+        interestRate:
+          type: number
+        nextDueDate:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [ACTIVE, CLOSED, NPA, WRITTEN_OFF]
