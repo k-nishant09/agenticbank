@@ -1063,22 +1063,57 @@ python3 scripts/redeploy_and_test.py
 
 ### `HTTP 400: failed to get provider for model qwen2-5-72b-instruct`
 
-The Qwen model-gateway is temporarily refusing the request. This is a transient failure
-— the run returns `status=completed` but the response text contains the error string.
+**Two distinct causes** with different fixes:
+
+#### Cause 1 — Model-gateway connection credentials missing on Live env (permanent, not transient)
+
+**Symptom:** Every run fails with this error. Not intermittent.
+
+**Root cause:** There are two connections for the model-gateway — `model_gateway_key`
+(underscore) and `model-gateway-key` (hyphen). The Qwen virtual-model uses the hyphen
+variant. Its **Live** environment configuration or credentials may be missing.
+
+**Diagnosis:**
+```bash
+uvx --from ibm-watsonx-orchestrate orchestrate connections list
+# Look for model-gateway-key Live row — should show ✅ not ❌
+```
+
+**Fix** (run in order):
+```bash
+# Step 1 — create Live configuration (only needed once if it shows ❌ under Live)
+uvx --from ibm-watsonx-orchestrate orchestrate connections configure \
+  --app-id model-gateway-key \
+  --environment live \
+  --type team \
+  --kind api_key \
+  --server-url "https://model-gateway-model-gateway.apps.<CLUSTER_DOMAIN>/v1"
+
+# Step 2 — set the API key (get it from the model-gateway-secret in the cluster):
+oc get secret model-gateway-secret -n cpd-instance \
+  -o jsonpath='{.data.s2s\.apikey}' | base64 -d && echo
+
+uvx --from ibm-watsonx-orchestrate orchestrate connections set-credentials \
+  --app-id model-gateway-key \
+  --env live \
+  --api-key <value-from-above>
+```
+
+After setting credentials, re-run `python3 scripts/smoke_test.py` — should pass immediately.
+
+#### Cause 2 — Transient model-gateway pod overload
+
+**Symptom:** Intermittent — most runs succeed, occasional runs fail.
 
 ```bash
 # Check model-gateway pods
 oc get pods -n cpd-instance | grep model-gateway
 
-# Check logs
-oc logs -n cpd-instance -l app=model-gateway --tail=50
+# Check recent logs for real errors
+oc logs -n cpd-instance model-gateway-<pod> --tail=50 | grep -v Unauthorized
 
 # Mitigation: retry the run after 10–30 seconds
-# The test scripts already retry 2× on 5xx errors automatically
 ```
-
-**The test script detects this:** `_is_transient_model_error()` in `test_all_agents.py`
-matches the string and resubmits up to 3 times with 8s backoff.
 
 ---
 
