@@ -45,3 +45,4 @@ logs/
 
 # ── Internal / deployment-specific scripts (contain hardcoded infra details) ─
 scripts/internal/*.py
+scripts/qc.js
