@@ -1124,6 +1124,35 @@ python3 scripts/test_all_agents.py --show-slos
 
 Category D (AIOps) is derived from Category A results — no extra API calls.
 
+**Category D — AIOps metrics derived from Category A**
+
+After every happy-path run, `test_all_agents.py` prints a Category D report that aggregates
+the following from the Category A step results. For full collection and analysis methodology
+see [§11.4 Metrics and observability](#114-metrics-and-observability).
+
+| D-metric | How derived | What to watch |
+|---|---|---|
+| p50 / p95 latency per agent | Step wall-times from Category A | Compare against `slo/agent_slos.yaml` p95 targets |
+| Step count vs budget | Observed steps vs expected step budget per agent | >2× budget → reasoning loop is not converging |
+| Circuit breaker events | `record_agent_call` returns OPEN on any step | Must be 0 in a clean production run |
+| Guardrail PASS rate | Category B BLOCKED results over Category A clean runs | BLOCKED on clean input → prompt drift |
+| Token cost trend | Sum of LLM call spans from trace export | Week-over-week increase > 20% → investigate |
+
+To pull the raw trace spans that back these numbers:
+
+```bash
+# After running Category A, search for the traces just generated
+orchestrate observability traces search --last 30m --limit 20
+
+# Export the case_supervisor trace (the root span) for the full span tree
+orchestrate observability traces export \
+  --trace-id <trace_id_from_search> \
+  --output category_a_trace.json --pretty
+
+# The JSON span tree shows every nested agent call, tool call and LLM call
+# with duration_ms — use this to identify which sub-agent is the latency driver
+```
+
 ### Confirmed live results — Category A (happy path, 2026-07-15)
 
 ```
@@ -2059,3 +2088,381 @@ beyond the guardrail itself).
 | `kyc_nri_agent` | `validate_agent_input` + `mask_pii_output` | ✅ deployed |
 | `payment_agent` | `enforce_payment_preconditions` | ✅ deployed |
 | `sanctions_agent` | `validate_agent_input` | ✅ deployed |
+
+---
+
+### 11.4 Metrics and observability
+
+This section explains the four-layer metrics model — what to measure at each layer, how to
+collect it, and how to act on it. Every layer answers a different question about agent health.
+
+---
+
+#### Layer 1 — Metric taxonomy (what to measure per agent)
+
+Track three categories for every agent in the orchestration:
+
+**Speed metrics**
+
+| Metric | What it tells you | Where to find it |
+|---|---|---|
+| Total response time (p50/p95/p99) | End-to-end agent latency | Trace root span duration |
+| Reasoning loop count | How many ReAct think→act→observe cycles ran | Count of `thought` + `action` span pairs |
+| Tool call count | How many tools the agent invoked | Count of `tool_call` child spans |
+| LLM call count | Total LLM inferences inside this agent | Count of `llm_call` child spans |
+| Nested agent call time | Latency cost of each collaborator call | Each `agent_call` child span duration |
+
+Total agent response time breaks down as:
+
+```
+Total response time =
+  Guidelines Processing     (one LLM call if guidelines: is set)
+  + Reasoning Loop(s)       (each loop ≈ 2 LLM calls: thought + action)
+  + Tool Execution(s)       (one span per tool call)
+  + Context Processing      (grows with conversation history length)
+  + Plugin Logic            (if pre/post plugins are configured)
+```
+
+For a chained orchestration (supervisor → compliance_supervisor → aml_agent), each nested
+agent runs its own ReAct loop — latency multiplies. The trace tree reveals exactly which
+sub-agent or tool is responsible.
+
+**Quality metrics**
+
+| Metric | What it tells you | Source |
+|---|---|---|
+| Journey Success Rate | Did the agent complete the correct tool call sequence? | `JourneySuccessMetric` in eval framework |
+| Tool Calling Accuracy | Were the right tools called with the right arguments? | `ToolCalling` operator |
+| Agent Routing Accuracy | Did the supervisor delegate to the correct collaborator? | `OrchestrateAgentRoutingAccuracy` |
+| Answer Correctness / Faithfulness | Is the response accurate and grounded? | `answer_quality.correctness` + `.faithfulness` in eval API |
+| Tool Quality (accuracy + relevance) | Are tool selections appropriate for the task? | `tool_quality.accuracy` + `.relevance` in eval API |
+
+**Cost / safety metrics** (zero-tolerance in production)
+
+| Metric | Target | Alert if |
+|---|---|---|
+| Token consumption per case | Track week-over-week trend | >20% rise → prompt or history regression |
+| Guardrail BLOCKED rate | Proportional to adversarial traffic | BLOCKED on clean input → investigate prompt drift |
+| Circuit breaker OPEN events | 0 per clean case | Any event → agent loop detected, file audit finding |
+| PII leakage events | 0 always | Any event → `mask_pii_output` not being called |
+
+---
+
+#### Layer 2 — Traces: seeing the full execution path
+
+Traces are the primary tool for per-flow analysis. Every agent invocation produces a span
+tree covering every LLM call, tool call, and collaborator call inside it.
+
+**Via CLI (fastest for ad-hoc investigation)**
+
+```bash
+# Search traces from the last 30 minutes
+orchestrate observability traces search --last 30m
+
+# Search a specific time window (ISO 8601)
+orchestrate observability traces search \
+  --start-time 2026-07-01T10:00:00Z \
+  --end-time   2026-07-01T11:00:00Z \
+  --limit 100
+
+# Export full span detail for a specific trace
+orchestrate observability traces export \
+  --trace-id <trace_id> \
+  --output trace_analysis.json --pretty
+```
+
+**Reading the exported span tree**
+
+The JSON output contains every span in the tree. For the multi-agent banking flow:
+
+```json
+{
+  "span_name": "case_supervisor_agent",
+  "duration_ms": 46200,
+  "children": [
+    { "span_name": "llm_call:thought",                 "duration_ms": 3100 },
+    { "span_name": "tool_call:validate_agent_input",   "duration_ms": 40  },
+    { "span_name": "tool_call:record_agent_call",      "duration_ms": 20  },
+    { "span_name": "agent_call:customer_360_agent",    "duration_ms": 8300,
+      "children": [
+        { "span_name": "llm_call:thought",             "duration_ms": 2800 },
+        { "span_name": "tool_call:get_customer_profile","duration_ms": 900 },
+        { "span_name": "tool_call:mask_pii_output",    "duration_ms": 30  }
+      ]
+    },
+    { "span_name": "agent_call:compliance_supervisor_agent", "duration_ms": 55800,
+      "children": [
+        { "span_name": "agent_call:aml_agent",             "duration_ms": 18200 },
+        { "span_name": "tool_call:enforce_compliance_gate","duration_ms": 10   },
+        { "span_name": "agent_call:sanctions_agent",       "duration_ms": 20400 },
+        { "span_name": "agent_call:fema_agent",            "duration_ms": 12100 }
+      ]
+    },
+    { "span_name": "llm_call:final_answer",            "duration_ms": 2900 }
+  ]
+}
+```
+
+This immediately reveals that `compliance_supervisor_agent` (55.8 s) is the dominant
+contributor to total latency. Within it, `sanctions_agent` (20.4 s) is the slowest leaf —
+the right place to start tool optimisation.
+
+**Via REST API (for automation / CI dashboards)**
+
+```bash
+# Step 1 — find trace IDs for a time window
+GET /v1/observability/traces?start_time=2026-07-01T10:00:00Z&end_time=2026-07-01T11:00:00Z
+
+# Step 2 — fetch all spans for a trace
+GET /v1/observability/traces/{trace_id}/spans
+```
+
+Use the REST API in `scripts/test_all_agents.py` Category D to derive AIOps metrics
+programmatically after every run without additional manual steps.
+
+**Via Langfuse (LLM-level observability)**
+
+Enable the native integration when running Developer Edition:
+
+```bash
+orchestrate server start --with-ibm-telemetry
+# Then open: https://localhost:8765
+```
+
+Langfuse shows per-prompt, per-model token counts and latencies — useful for attributing
+token cost to individual LLM calls within a reasoning loop. **Banking data boundary rule:**
+never emit raw PAN, Aadhaar, CIBIL scores, or account numbers to any external observability
+service. Langfuse is for LLM call profiling; `watsonx.governance` is for compliance audit.
+
+---
+
+#### Layer 3 — AI evals: accuracy gate before and after every change
+
+The eval framework measures **quality**, not latency. It simulates real user interactions
+against ground truth datasets and produces per-case pass/fail results.
+
+**Ground truth dataset format** (one JSON object per scenario):
+
+```json
+{
+  "agent": "compliance_supervisor_agent",
+  "story": "Customer CUST-NRI-12345 sends ₹20L to Singapore. AML risk LOW. Sanctions CLEAR. FEMA ELIGIBLE.",
+  "starting_sentence": "Run full compliance check for CUST-NRI-12345",
+  "goals": {
+    "run_aml_check-1":           ["enforce_compliance_gate-1"],
+    "enforce_compliance_gate-1": ["run_sanctions_check-1"],
+    "run_sanctions_check-1":     ["run_fema_check-1"],
+    "run_fema_check-1":          ["summarize"]
+  },
+  "goal_details": [
+    {
+      "type": "tool_call", "name": "run_aml_check-1",
+      "tool_name": "run_aml_check",
+      "args": { "customer_id": "CUST-NRI-12345", "amount": 2000000 }
+    },
+    {
+      "type": "tool_call", "name": "enforce_compliance_gate-1",
+      "tool_name": "enforce_compliance_gate",
+      "args": { "case_id": "CASE-2026-00441", "aml_status": "PASS", "step_reached": "AML" }
+    },
+    {
+      "type": "tool_call", "name": "run_sanctions_check-1",
+      "tool_name": "check_sanctions",
+      "args": { "customer_id": "CUST-NRI-12345" }
+    },
+    {
+      "type": "tool_call", "name": "run_fema_check-1",
+      "tool_name": "check_fema_lrs",
+      "args": { "customer_id": "CUST-NRI-12345", "remittance_amount": 2000000 }
+    },
+    {
+      "type": "text", "name": "summarize",
+      "response": "Compliance check complete. Overall status: CLEARED.",
+      "keywords": ["CLEARED", "AML", "Sanctions", "FEMA"]
+    }
+  ]
+}
+```
+
+The `goals` dependency graph enforces tool call order. `enforce_compliance_gate-1` must be
+called after `run_aml_check-1` and before `run_sanctions_check-1`. If the agent skips or
+reorders any step, the eval fails and deploy is blocked.
+
+**Running evals against the live cluster**
+
+```bash
+orchestrate evaluations evaluate --config evals/eval_config_onprem.yaml
+```
+
+**`evals/eval_config_onprem.yaml`:**
+
+```yaml
+test_paths:
+  - evals/credit_assessment/
+  - evals/compliance/
+  - evals/supervisor/
+auth_config:
+  url: https://cpd-cpd-instance.apps.f73l056.fusion.tadn.ibm.com/orchestrate/instances/local
+  tenant_name: onprem
+output_dir: evals/results
+enable_verbose_logging: true
+n_runs: 3          # run each case 3 times — detect variance, not just pass/fail
+metrics:
+  - JourneySuccessMetric
+  - ToolCalling
+  - OrchestrateAgentRoutingAccuracy
+  - StepMetrics
+  - AgentResponseTime
+operator_configs:
+  JourneySuccessMetric:
+    threshold: 0.95
+  OrchestrateAgentRoutingAccuracy:
+    threshold: 1.00   # supervisor routing must be perfect
+```
+
+**Analysing results after a run**
+
+```bash
+# Breakdown: which tool calls were wrong, which args mismatched, why
+orchestrate evaluations analyze \
+  -d evals/results/20260701_1000 \
+  --mode enhanced
+```
+
+Output covers:
+- **Analysis Summary** — evaluation type, total runs, runs with problems, overall status
+- **Test Case Summary** — expected vs actual tool calls, correct calls, text match, journey success
+- **Conversation History** — step-by-step what the agent did vs what was expected
+- **Analysis Results** — exact errors with reasoning (e.g., `irrelevant tool call: sanctions_agent called before enforce_compliance_gate`)
+
+**Interpreting quality metrics from the REST API**
+
+```bash
+# List all evaluation runs for an agent
+GET /v1/orchestrate/agent/{agent_id}/evaluations
+
+# Get detailed metrics for one run
+GET /v1/orchestrate/agent/{agent_id}/evaluations/{evaluation_id}
+```
+
+Response fields to watch:
+
+```json
+{
+  "aggregate_metrices": {
+    "tool_quality": {
+      "accuracy":  { "value": 0.95, "status": "pass" },
+      "relevance": { "value": 0.92, "status": "pass" }
+    },
+    "answer_quality": {
+      "correctness":  { "value": 0.88, "status": "pass" },
+      "faithfulness": { "value": 0.96, "status": "pass" }
+    },
+    "transaction_completion": {
+      "success": 9, "failed": 1, "total": 10
+    }
+  }
+}
+```
+
+Export eval results for a governance report:
+
+```bash
+POST /v1/orchestrate/agent/{agent_id}/evaluations/export
+{ "evaluation_ids": ["<eval-id-1>", "<eval-id-2>"] }
+# Returns CSV for a single run, ZIP for multiple
+```
+
+---
+
+#### Layer 4 — Governance monitoring: watsonx.governance integration
+
+For production agents, enable the `watsonx.governance` integration to surface AI risk
+metrics (drift, bias, fairness, lifecycle) in an enterprise dashboard.
+
+**Enable monitoring per agent**
+
+```bash
+# Enable governance monitoring
+POST /v1/orchestrate/monitoring/agents/{agent_id}/status
+Content-Type: application/json
+{ "enable": true }
+
+# Response includes the dashboard URL for this specific agent
+{
+  "monitoring_enabled": true,
+  "wxg_metrics_url": "https://<wxg-instance>/metrics/agent/<agent_id>/..."
+}
+
+# Read back the current status at any time
+GET /v1/orchestrate/monitoring/agents/{agent_id}/status
+```
+
+The `wxg_metrics_url` opens the `watsonx.governance` dashboard — risk scores, input/output
+drift, fairness metrics, and model lifecycle controls. This is the correct tool for the
+Compliance Officer (Rahul) and Credit Risk Manager (Neha) personas, not the trace viewer.
+
+**Tool selection by purpose**
+
+| Tool | Purpose | Audience |
+|---|---|---|
+| Traces CLI / API | Latency, step count, tool call breakdown | Developer, DevOps |
+| Langfuse (`--with-ibm-telemetry`) | Per-LLM-call token cost and latency | Developer |
+| Eval framework (`evaluations evaluate`) | Journey success, routing accuracy, tool quality | Developer, QA |
+| `watsonx.governance` (`wxg_metrics_url`) | AI risk, drift, fairness, audit lifecycle | Compliance Officer, Risk Manager |
+
+---
+
+#### End-to-end metrics analysis workflow
+
+Run this after every deploy or prompt change:
+
+```bash
+# ── 1. Accuracy gate ──────────────────────────────────────────────────────
+orchestrate evaluations evaluate --config evals/eval_config_onprem.yaml
+# ✓ JourneySuccessMetric ≥ 0.95 for all agents
+# ✓ OrchestrateAgentRoutingAccuracy = 1.00 for case_supervisor_agent
+# ✗ Any compliance suite failure → block deploy
+
+# ── 2. Live guardrail probes ──────────────────────────────────────────────
+python3 scripts/test_all_agents.py --category B
+# ✓ 5/5 PASS (injection, cross-customer, AML pass, payment gate, CIBIL range)
+
+# ── 3. Happy path with latency capture ────────────────────────────────────
+python3 scripts/test_all_agents.py --category A
+# Compare observed latencies against slo/agent_slos.yaml p95 targets
+
+# ── 4. Trace drill-down for any agent that breaches its SLO ───────────────
+orchestrate observability traces search --last 30m
+orchestrate observability traces export --trace-id <id> --output run.json
+# → identify which child span (nested agent or tool) is the bottleneck
+# → reasoning loop count > 5 on one agent → prompt is ambiguous, tighten it
+
+# ── 5. Token cost audit ───────────────────────────────────────────────────
+# Sum llm_call.token_count across all spans in the trace
+# Flag: week-over-week increase > 20% → context accumulation regression
+
+# ── 6. Safety checks (all must be zero) ──────────────────────────────────
+# guardrail_bypass_events  = 0  (validate_agent_input PASS rate must be 100%)
+# pii_leakage_events       = 0  (mask_pii_output called before every return)
+# circuit_breaker_events   = 0  (no agent called above its per-case limit)
+```
+
+---
+
+#### Per-agent metrics quick reference
+
+| Agent | p95 latency target | Quality gate | Safety gate | Red flag |
+|---|---|---|---|---|
+| `case_supervisor_agent` | ≤ 120 s | Routing accuracy = 100% | `validate_agent_input` PASS | Wrong collaborator called |
+| `compliance_supervisor_agent` | ≤ 90 s | AML→SANCTIONS→FEMA order correct | `enforce_compliance_gate` PROCEED | Gate called out of order |
+| `aml_agent` | ≤ 25 s | PASS / REVIEW_REQUIRED correct | Circuit breaker: max 1 call/case | > 1 call on same case |
+| `sanctions_agent` | ≤ 25 s | Near-name match detection | Circuit breaker: max 1 call/case | CONFIRMED_MATCH details shared with customer |
+| `fema_remittance_agent` | ≤ 20 s | LRS arithmetic correct | Circuit breaker: max 1 call/case | Structuring advice given |
+| `credit_bureau_agent` | ≤ 20 s | Score in range 300–900 | `validate_agent_input` PASS | Out-of-range score returned to policy engine |
+| `credit_assessment_agent` | ≤ 25 s | FOIR boundary correctness | `validate_credit_inputs` PASS | Policy engine called with BLOCKED inputs |
+| `document_agent` | ≤ 30 s | Completeness % accurate | `validate_agent_input` PASS | Missing document IDs not flagged |
+| `customer_360_agent` | ≤ 30 s | Profile aggregation complete | `mask_pii_output` called | Raw PAN/Aadhaar in any upstream response |
+| `kyc_nri_agent` | ≤ 25 s | KYC status correct | `validate_agent_input` + `mask_pii_output` | PII visible in supervisor response |
+| `fx_agent` | ≤ 30 s | Rate within market tolerance | `validate_agent_input` PASS | Quote not locked before payment step |
+| `payment_agent` | ≤ 25 s | SWIFT UETR returned | `enforce_payment_preconditions` APPROVED | Payment instruction with any gate unmet |

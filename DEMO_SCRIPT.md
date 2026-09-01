@@ -28,6 +28,7 @@
 | 9 | **Guardrail live demo** — injection blocked | 3 min |
 | 10 | **Guardrail live demo** — payment gate blocked | 2 min |
 | 11 | Case closure | 1 min |
+| 12 | **Metrics + observability walkthrough** — 4-layer model | 3 min |
 
 ---
 
@@ -596,6 +597,104 @@ Amount: ₹20,00,000.
 
 ---
 
+## Scene 12 — Metrics and observability walkthrough ⚡
+
+**What to say:** "I want to show you the four layers of visibility we get across the
+12-agent orchestration — latency traces, accuracy evals, governance monitoring, and
+per-case AIOps metrics. This is what makes it operationally trustworthy, not just a demo."
+
+**Layer 1 — Metric taxonomy (show the SLO file)**
+
+Open `slo/agent_slos.yaml` and point to the per-agent SLO contracts:
+
+```
+"Every agent has its own SLO contract: p95 latency target, task success rate floor,
+guardrail bypass = 0, PII leakage = 0. These aren't aspirational — they're enforced
+by the test runner and checked after every deploy."
+```
+
+**Layer 2 — Traces: the span tree (run this live)**
+
+```bash
+# Pull the last 30 minutes of traces
+orchestrate observability traces search --last 30m
+
+# Export the root span for the compliance run
+orchestrate observability traces export \
+  --trace-id <trace_id> --output compliance_trace.json --pretty
+```
+
+**What to say while it runs:**
+> "This JSON gives us a span tree for the entire case run. Every nested agent call —
+> compliance_supervisor calling aml_agent calling sanctions_agent — shows its own
+> duration. We can see that sanctions_agent took 20.4 seconds out of the 55.8-second
+> compliance pipeline. That's the lever to pull if we need to cut latency."
+
+**Talking point — span tree reading:**
+```json
+compliance_supervisor_agent: 55800ms
+  ├─ aml_agent:             18200ms  ← 33% of total
+  ├─ enforce_compliance_gate:   10ms  ← deterministic, negligible
+  ├─ sanctions_agent:       20400ms  ← 37% of total (bottleneck)
+  └─ fema_agent:            12100ms  ← 22% of total
+```
+"The gate itself — `enforce_compliance_gate` — takes 10 milliseconds. The LLM
+reasoning and tool calls inside each agent account for the rest. No guesswork."
+
+**Layer 3 — AI evals: quality gate (show the eval run)**
+
+```bash
+orchestrate evaluations evaluate --config evals/eval_config_onprem.yaml
+orchestrate evaluations analyze -d evals/results/latest --mode enhanced
+```
+
+**What to say:**
+> "Every agent has a ground truth dataset. The `goals` field is a dependency graph —
+> it encodes the *required order* of tool calls, not just which tools are called.
+> If `enforce_compliance_gate` runs before `run_aml_check`, the eval fails and
+> the deploy is blocked. This is what makes accuracy a hard gate, not a suggestion."
+
+**Show the eval API response live (optional deep-dive):**
+```bash
+# Fetch the latest eval run for compliance_supervisor_agent
+curl -H "Authorization: Bearer $TOKEN" \
+  "$WXO_URL/v1/orchestrate/agent/$COMPLIANCE_AGENT_ID/evaluations" \
+  | python3 -m json.tool | grep -A5 "tool_quality"
+```
+
+Expected output:
+```json
+"tool_quality": {
+  "accuracy":  { "value": 1.00, "status": "pass" },
+  "relevance": { "value": 0.97, "status": "pass" }
+}
+```
+
+**Layer 4 — Governance monitoring (show the dashboard URL)**
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"enable": true}' \
+  "$WXO_URL/v1/orchestrate/monitoring/agents/$SUPERVISOR_AGENT_ID/status"
+```
+
+**What to say:**
+> "This response gives us a `wxg_metrics_url` — a direct link to the
+> `watsonx.governance` dashboard for this agent. That's where the Compliance Officer
+> watches for input drift, bias, and AI risk signals over time. It's a different
+> tool from the latency trace — one is for developers, one is for risk managers."
+
+**Closing the metrics scene:**
+```
+Developer / DevOps  → traces CLI + Langfuse
+QA / Engineering    → eval framework (JourneySuccess, RoutingAccuracy, ToolQuality)
+Compliance Officer  → watsonx.governance dashboard (drift, fairness, risk)
+All               → slo/agent_slos.yaml as the single source of truth for targets
+```
+
+---
+
 ## Key messages for sellers
 
 | Capability | What to say |
@@ -608,6 +707,8 @@ Amount: ₹20,00,000.
 | **Human-in-the-loop** | Credit decisions always go to a human credit officer. Compliance failures escalate to the compliance investigation team. High-value payments trigger senior approver sign-off. |
 | **On-premises, no data leaves** | Qwen2.5-72B runs entirely on-prem via the internal model-gateway. `virtual-model/openai/qwen2-5-72b-instruct` is an internal alias — no data touches OpenAI's internet service. |
 | **Proven on this cluster** | All 21 test cases passed live on this cluster: 13/13 happy path, 5/5 guardrail probes, 3/3 system prompt identity. Evals gate: 57/57, 100%. |
+| **Four-layer observability** | Latency traces (CLI/API), per-LLM-call Langfuse, eval framework accuracy gates, and watsonx.governance risk dashboard — one tool per audience, all pointing at the same SLO targets. |
+| **Metrics are per-agent, not per-platform** | Each of the 12 agents has its own p95 latency target, quality gate, safety gate, and red flag definition in `slo/agent_slos.yaml` — operationally useful, not a vanity dashboard. |
 
 ---
 
