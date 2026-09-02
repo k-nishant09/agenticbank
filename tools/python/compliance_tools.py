@@ -68,6 +68,27 @@ def get_customer_risk_score(customer_id: str) -> dict:
 
 # ─── SANCTIONS ────────────────────────────────────────────────────────────────
 
+# Comprehensively sanctioned country codes (OFAC primary sanctions programs).
+# Any transaction to these destinations must return POTENTIAL_MATCH.
+_SANCTIONED_COUNTRIES = {
+    "IRN",  # Iran
+    "PRK",  # North Korea (DPRK)
+    "SYR",  # Syria
+    "CUB",  # Cuba
+    "SDN",  # Sudan
+    "RUS",  # Russia (broad sector sanctions, OFAC)
+    "BLR",  # Belarus
+    "MMR",  # Myanmar
+}
+
+# Names that appear on OFAC/UN consolidated lists (demo fixture — add real lookup in prod)
+_SANCTIONED_NAMES = {
+    "john doe sanctioned",
+    "al-qaeda member",
+    "terrorist entity",
+}
+
+
 @tool
 def screen_sanctions(
     customer_id: str,
@@ -86,7 +107,51 @@ def screen_sanctions(
     :param transaction_amount: Proposed transaction amount in originating currency.
     :return: A dict with sanctionStatus, matchDetails and caseReference.
     """
-    # Stub — replace with sanctions screening service (e.g. Dow Jones, Refinitiv WorldCheck)
+    # Check sanctioned destination country
+    if beneficiary_country.upper() in _SANCTIONED_COUNTRIES:
+        return {
+            "customerId": customer_id,
+            "beneficiaryName": beneficiary_name,
+            "beneficiaryCountry": beneficiary_country,
+            "sanctionStatus": "POTENTIAL_MATCH",
+            "listsChecked": ["OFAC_SDN", "UN_CONSOLIDATED", "EU_CONSOLIDATED", "MHA_INDIA"],
+            "matchDetails": [
+                {
+                    "list": "OFAC_SDN",
+                    "matchType": "COUNTRY_SANCTIONS",
+                    "matchReason": f"Destination country {beneficiary_country} is subject to comprehensive OFAC sanctions program.",
+                    "confidence": 1.0,
+                }
+            ],
+            "caseReference": "SANC-2026-BLOCKED-001",
+            "screenedAt": "2026-07-15T09:01:00Z",
+            "action": "STOP. Escalate to compliance-investigation-team. Do NOT execute payment.",
+        }
+
+    # Check sanctioned name (case-insensitive, partial match)
+    name_lower = beneficiary_name.lower()
+    for sanctioned in _SANCTIONED_NAMES:
+        if sanctioned in name_lower:
+            return {
+                "customerId": customer_id,
+                "beneficiaryName": beneficiary_name,
+                "beneficiaryCountry": beneficiary_country,
+                "sanctionStatus": "POTENTIAL_MATCH",
+                "listsChecked": ["OFAC_SDN", "UN_CONSOLIDATED", "EU_CONSOLIDATED", "MHA_INDIA"],
+                "matchDetails": [
+                    {
+                        "list": "UN_CONSOLIDATED",
+                        "matchType": "NAME_MATCH",
+                        "matchReason": f"Beneficiary name '{beneficiary_name}' matches a consolidated list entry.",
+                        "confidence": 0.85,
+                    }
+                ],
+                "caseReference": "SANC-2026-NAMEMATCH-001",
+                "screenedAt": "2026-07-15T09:01:00Z",
+                "action": "STOP. Escalate to compliance-investigation-team for manual review.",
+            }
+
+    # Clean — no matches
     return {
         "customerId": customer_id,
         "beneficiaryName": beneficiary_name,
@@ -121,10 +186,19 @@ def check_fema_eligibility(
     :return: A dict with femaStatus, lrsUtilised, lrsRemaining, approvalRequired and remarks.
     """
     # Stub — replace with FEMA/LRS tracking system API
-    lrs_annual_limit = 25000000  # USD 250,000 equivalent in INR approx
-    lrs_utilised_ytd = 5000000
-    lrs_remaining = lrs_annual_limit - lrs_utilised_ytd
+    # LRS annual limit: USD 250,000 ≈ ₹2,50,00,000 (25 million INR)
+    LRS_ANNUAL_LIMIT = 25_000_000
 
+    # Derive YTD utilisation from the request amount for deterministic negative-case testing:
+    # - Requests ≥ ₹2 crore (20M) are treated as high-value; stub simulates ₹2Cr already utilised
+    #   so that any request that together would exceed the limit returns LIMIT_EXCEEDED.
+    # - Requests < ₹20L (2M) use conservative 5M utilised (standard happy path).
+    if remittance_amount_inr >= 20_000_000:
+        lrs_utilised_ytd = 20_000_000  # ₹2 crore already used this year
+    else:
+        lrs_utilised_ytd = 5_000_000   # ₹50 lakh used (happy path)
+
+    lrs_remaining = LRS_ANNUAL_LIMIT - lrs_utilised_ytd
     eligible = remittance_amount_inr <= lrs_remaining
 
     return {
@@ -134,11 +208,14 @@ def check_fema_eligibility(
         "purposeCode": purpose_code,
         "accountType": account_type,
         "femaStatus": "ELIGIBLE" if eligible else "LIMIT_EXCEEDED",
-        "lrsAnnualLimitINR": lrs_annual_limit,
+        "lrsAnnualLimitINR": LRS_ANNUAL_LIMIT,
         "lrsUtilisedYTD": lrs_utilised_ytd,
         "lrsRemainingINR": lrs_remaining,
-        "approvalRequired": remittance_amount_inr > 5000000,
-        "remarks": "Within LRS annual limit." if eligible else "Exceeds available LRS limit for this financial year.",
+        "approvalRequired": remittance_amount_inr > 5_000_000,
+        "remarks": (
+            "Within LRS annual limit." if eligible
+            else f"Exceeds available LRS limit. Remaining: ₹{lrs_remaining:,.0f}. Requested: ₹{remittance_amount_inr:,.0f}."
+        ),
         "policyVersion": "FEMA-LRS-2026",
     }
 
