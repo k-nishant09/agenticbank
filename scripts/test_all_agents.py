@@ -183,6 +183,21 @@ _TRANSIENT_ERROR_PATTERNS = (
     "Bad Gateway",
     "Service Unavailable",
     "model-gateway",
+    # WXO platform transient DB errors (SQLAlchemy connection pool recycled mid-run)
+    "invalid transaction is rolled back",
+    "sqlalche",
+    "rollback() fully",
+    "can't reconnect until",
+)
+
+# Responses that indicate the planner didn't understand — safe to retry
+_PLANNER_DID_NOT_UNDERSTAND_PATTERNS = (
+    "i did not understand",
+    "i don't understand",
+    "i am sorry, i did not understand",
+    "please try again",
+    "could not understand your request",
+    "i'm sorry, i couldn't",
 )
 
 # Agents whose slow responses should NOT trigger content-retry on normal completion.
@@ -194,6 +209,11 @@ _NO_CONTENT_RETRY_AGENTS: set[str] = set()   # removed — all agents retry on m
 def _is_transient_model_error(content: str) -> bool:
     low = content.lower()
     return any(p.lower() in low for p in _TRANSIENT_ERROR_PATTERNS)
+
+
+def _is_planner_did_not_understand(content: str) -> bool:
+    low = content.lower()
+    return any(p in low for p in _PLANNER_DID_NOT_UNDERSTAND_PATTERNS)
 
 
 def _run_agent(agent_name: str, message: str,
@@ -237,18 +257,38 @@ def _run_agent(agent_name: str, message: str,
             return "timeout", s
 
         content = _extract_content(s)
-        # Always retry on hard model-gateway errors ("failed to get provider…")
-        # For compliance_supervisor (slow pipeline), only retry if it's a real error
-        # not just a truncated result — check that content is SHORT (< 80 chars)
-        is_model_err = _is_transient_model_error(content)
-        is_short     = len(content.strip()) < 120   # real errors are brief messages
-        should_retry = (st == "completed" and is_model_err
-                        and (is_short or agent_name not in {"compliance_supervisor_agent"})
-                        and attempt <= retries)
+        # Retry on:
+        #   1. Hard model-gateway errors ("failed to get provider…", 500s from LLM cluster)
+        #      — always retry regardless of response length
+        #   2. Platform DB errors (SQLAlchemy / rolled-back transaction) — status may be "failed"
+        #   3. Planner "did not understand" responses (transient planning failures)
+        is_model_err  = _is_transient_model_error(content)
+        is_db_err     = st == "failed" and is_model_err
+        is_understand = _is_planner_did_not_understand(content)
+
+        # Extract last_error from failed runs for DB error detection
+        if st == "failed":
+            last_err = (s.get("last_error") or s.get("error") or
+                        s.get("result", {}).get("error", "") or "")
+            if isinstance(last_err, str):
+                is_db_err = is_db_err or any(
+                    p.lower() in last_err.lower() for p in _TRANSIENT_ERROR_PATTERNS
+                )
+
+        should_retry = (
+            attempt <= retries and (
+                (st == "completed" and is_model_err) or   # LLM 500/gateway errors — no length gate
+                is_db_err or                               # platform DB transaction errors
+                (st == "completed" and is_understand)      # planner "did not understand"
+            )
+        )
         if should_retry:
-            print(f"    [content-retry {attempt}/{retries}] model-gateway error — "
-                  f"waiting 12s... ({content[:80]})")
-            time.sleep(12)
+            reason = ("DB/transaction error" if is_db_err
+                      else "planner did-not-understand" if is_understand
+                      else "model-gateway error")
+            print(f"    [content-retry {attempt}/{retries}] {reason} — "
+                  f"waiting 15s... ({content[:80]})")
+            time.sleep(15)
             continue
 
         return st, s
